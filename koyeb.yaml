@@ -1,0 +1,18 @@
+services:
+  - name: deltaai-telegram-bot
+    instance_type: nano
+    regions:
+      - fra
+    env:
+      - key: BOT_TOKEN
+        value: "8986554318:AAEi3LkWSg-UqAzTiYDyY6CQwUHRTTS9k48"
+      - key: DELTA_AI_URL
+        value: "https://kopabdo-delta-ai.hf.space"
+      - key: DEFAULT_MODEL
+        value: "deepseek-v3"
+      - key: BOT_LANGUAGE
+        value: "ar"
+      - key: PORT
+        value: "8000"
+    routes:
+      - port: 8000
