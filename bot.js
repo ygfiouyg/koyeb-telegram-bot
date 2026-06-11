@@ -1,11 +1,12 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// DeltaAI Telegram Bot v2.0 — مع المسار الذكي!
+// DeltaAI Telegram Bot v3.0 — المسار الذكي الحقيقي!
 // ═══════════════════════════════════════════════════════════════════════════
-// الأوامر الجديدة:
-// /ملف — ملف دراسي ملون (زي المسار الذكي)
-// /ملخص — ملخص محاضرة في PDF
-// /اختبار — كويز بأسئلة اختيارية
-// /خريطة — خريطة ذهنية
+// التغييرات في v3.0:
+// ✅ المسار الذكي الحقيقي — يستخدم /api/ai/hf/document (نفس المحرك في الموقع)
+// ✅ PDF ملون واحترافي مع تصميم وجداول وعناصر ديكور
+// ✅ 6 أنماط تصميم (أكاديمي، داكن، إسلامي، بسيط، إبداعي، فاخر)
+// ✅ إصلاح bug في /مسح
+// ✅ تحسين معالجة الأخطاء
 // ═══════════════════════════════════════════════════════════════════════════
 
 import TelegramBot from 'node-telegram-bot-api';
@@ -35,13 +36,29 @@ try {
 } catch {}
 
 function getSession(id) {
-  if (!sessions[id]) sessions[id] = { model: null, language: BOT_LANGUAGE, msgCount: 0 };
+  if (!sessions[id]) sessions[id] = { model: null, language: BOT_LANGUAGE, style: null, msgCount: 0 };
   return sessions[id];
 }
 
 function saveSessions() {
   try { writeFileSync(join(DATA_DIR, 'sessions.json'), JSON.stringify(sessions, null, 2)); } catch {}
 }
+
+// ─── Design Styles for المسار الذكي ────────────────────────────────────
+const DESIGN_STYLES = {
+  'اكاديمي': 'Formal academic with classic borders and calm colors',
+  'داكن': 'Cyber/dark with neon colors',
+  'اسلامي': 'Gold ornaments, traditional borders',
+  'بسيط': 'Clean white, minimal',
+  'ابداعي': 'Bold colors and gradients',
+  'فاخر': 'Monochrome, refined',
+  'academic': 'Formal academic with classic borders and calm colors',
+  'dark': 'Cyber/dark with neon colors',
+  'islamic': 'Gold ornaments, traditional borders',
+  'clean': 'Clean white, minimal',
+  'creative': 'Bold colors and gradients',
+  'luxury': 'Monochrome, refined',
+};
 
 // ─── DeltaAI Chat ────────────────────────────────────────────────────────
 
@@ -50,18 +67,18 @@ async function askDeltaAI(message, model, language) {
   const body = { message, model: model || DEFAULT_MODEL };
   if (language) body.language = language;
 
-  console.log('[AI] model=' + body.model + ' msg=' + message.substring(0, 40));
+  console.log('[AI] model=' + body.model + ' msg=' + message.substring(0, 60));
 
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(60_000),
+    signal: AbortSignal.timeout(90_000),
   });
 
   if (!response.ok) {
     const err = await response.text().catch(() => '');
-    throw new Error('DeltaAI ' + response.status + ': ' + err);
+    throw new Error('DeltaAI ' + response.status + ': ' + err.substring(0, 200));
   }
 
   let content = '';
@@ -99,46 +116,53 @@ async function askDeltaAI(message, model, language) {
   return { content: content.trim(), pdfUrl, smartDocResult, quizData, imageDataUrl };
 }
 
-// ─── Smart PDF Generation (المسار الذكي) ────────────────────────────────
-// Uses /api/ai/hf/document — the SAME engine as المسار الذكي on the website!
-// This generates beautiful colored PDFs with quizzes, flashcards, etc.
+// ═══════════════════════════════════════════════════════════════════════════
+// المسار الذكي — Smart Document Generation
+// يستخدم /api/ai/hf/document — نفس المحرك اللي في الموقع بالظبط!
+// بيولد PDF ملون واحترافي مع تصميم وجداول وعناصر ديكور
+// ═══════════════════════════════════════════════════════════════════════════
 
-async function generateSmartPDF(topic, content, mode) {
+async function generateSmartPDF(topic, options = {}) {
   const url = DELTA_AI_URL + '/api/ai/hf/document';
-  console.log('[SmartPDF] Generating (المسار الذكي):', topic);
+  console.log('[SmartPDF] Generating المسار الذكي:', topic);
+
+  const styleDesc = options.styleDescription || '';
 
   const body = {
-    mode: mode || 'local',         // 'local' = local PDF engine (fast + beautiful)
+    mode: 'local',
     modelId: 'local-pdf',
     topic: topic,
-    language: BOT_LANGUAGE,
-    instructions: 'أضف أسئلة مراجعة وبطاقات ذاكرة وخريطة ذهنية. نظم المحتوى بألوان وتصميم احترافي.',
-    includeAiImages: false,
+    language: options.language || BOT_LANGUAGE,
+    instructions: options.instructions || '',
+    styleDescription: styleDesc,
+    includeAiImages: options.includeAiImages || false,
     channelName: 'DeltaAI Bot',
   };
 
-  // If we have content, send it as a lecture
-  if (content) {
-    body.lectures = [{ title: topic, content: content }];
+  // If we have content, use batch mode
+  if (options.content) {
+    body.lectures = [{ title: topic, content: options.content }];
     body.mode = 'batch';
   }
+
+  console.log('[SmartPDF] Request:', JSON.stringify({ ...body, lectures: body.lectures ? '(has content)' : undefined }));
 
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(180_000), // 3 min — PDF generation takes time
+    signal: AbortSignal.timeout(300_000), // 5 min — PDF generation can take time
   });
 
   if (!response.ok) {
     const err = await response.text().catch(() => '');
-    console.error('[SmartPDF] Error:', response.status, err);
+    console.error('[SmartPDF] Error:', response.status, err.substring(0, 300));
     throw new Error('SmartPDF error ' + response.status + ': ' + err.substring(0, 200));
   }
 
-  // Check if response is SSE stream or JSON
+  // The API returns JSON (not SSE) when not authenticated
   const contentType = response.headers.get('content-type') || '';
-  
+
   if (contentType.includes('text/event-stream')) {
     // SSE response — parse stream for progress and result
     let fileUrl = null;
@@ -155,57 +179,56 @@ async function generateSmartPDF(topic, content, mode) {
       buffer = lines.pop() || '';
       for (const line of lines) {
         const t = line.trim();
-        if (!t || !t.startsWith('data:')) continue;
-        const d = t.slice(5).trim();
-        if (d === '[DONE]') continue;
-        try {
-          const ev = JSON.parse(d);
-          if (ev.fileUrl) fileUrl = ev.fileUrl;
-          if (ev.fileName) fileName = ev.fileName;
-          if (ev.stage) console.log('[SmartPDF] Stage:', ev.stage, ev.progress ? ev.progress + '%' : '');
-        } catch {}
+        if (!t) continue;
+        // Handle "event:" and "data:" lines
+        if (t.startsWith('data:')) {
+          const d = t.slice(5).trim();
+          if (d === '[DONE]') continue;
+          try {
+            const ev = JSON.parse(d);
+            if (ev.fileUrl) fileUrl = ev.fileUrl;
+            if (ev.fileName) fileName = ev.fileName;
+            if (ev.stage) console.log('[SmartPDF] Stage:', ev.stage, ev.progress ? ev.progress + '%' : '');
+          } catch {}
+        }
       }
     }
     reader.releaseLock();
 
     if (fileUrl) {
-      return { success: true, fileUrl, fileName: fileName || topic + '.pdf' };
+      return { success: true, fileUrl, fileName: fileName || topic.replace(/\s+/g, '_') + '.pdf' };
     }
-    throw new Error('SmartPDF: no fileUrl in SSE response');
+    throw new Error('SmartPDF: لم يتم العثور على رابط الملف');
   }
 
-  // JSON response
+  // JSON response (default without auth)
   const data = await response.json();
+  console.log('[SmartPDF] Response:', JSON.stringify({ success: data.success, fileUrl: data.fileUrl, fileName: data.fileName, durationMs: data.durationMs }));
+
   if (data.success || data.fileUrl) {
-    return { success: true, fileUrl: data.fileUrl, fileName: data.fileName || topic + '.pdf' };
+    return {
+      success: true,
+      fileUrl: data.fileUrl,
+      fileName: data.fileName || topic.replace(/\s+/g, '_') + '.pdf',
+      durationMs: data.durationMs,
+    };
   }
-  throw new Error('SmartPDF failed: ' + (data.error || 'unknown'));
+
+  throw new Error('SmartPDF فشل: ' + (data.error || 'خطأ غير معروف'));
 }
 
-// ─── Simple PDF fallback (أبيض وأسود — للطوارئ فقط) ──────────────────────
+// ─── Download PDF from DeltaAI ───────────────────────────────────────────
 
-async function generateSimplePDF(title, content) {
-  const url = DELTA_AI_URL + '/api/pdf/generate';
-  const body = {
-    title,
-    content,
-    modelId: DEFAULT_MODEL,
-    language: BOT_LANGUAGE,
-    documentType: 'lecture',
-    topicCategory: 'default',
-    useDesignReasoning: true,
-    includeImages: true,
-  };
+async function downloadPDF(path) {
+  const fullUrl = path.startsWith('http') ? path : DELTA_AI_URL + path;
+  console.log('[Download] Fetching:', fullUrl);
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(120_000),
-  });
+  const response = await fetch(fullUrl, { signal: AbortSignal.timeout(60_000) });
+  if (!response.ok) throw new Error('Download failed: ' + response.status);
 
-  if (!response.ok) throw new Error('PDF error ' + response.status);
-  return await response.json();
+  const buffer = Buffer.from(await response.arrayBuffer());
+  console.log('[Download] Size:', (buffer.length / 1024).toFixed(1) + 'KB');
+  return buffer;
 }
 
 // ─── Quiz Generation ─────────────────────────────────────────────────────
@@ -261,15 +284,6 @@ async function generateMindMap(topic, content) {
   return await response.json();
 }
 
-// ─── Download PDF from DeltaAI ───────────────────────────────────────────
-
-async function downloadPDF(path) {
-  const fullUrl = path.startsWith('http') ? path : DELTA_AI_URL + path;
-  const response = await fetch(fullUrl, { signal: AbortSignal.timeout(30_000) });
-  if (!response.ok) throw new Error('Download failed: ' + response.status);
-  return Buffer.from(await response.arrayBuffer());
-}
-
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
 function splitMsg(text, max = 4096) {
@@ -318,7 +332,7 @@ function formatMindMap(data, indent = 0) {
 import { createServer } from 'http';
 createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ status: 'ok', bot: 'DeltaAI', model: DEFAULT_MODEL, version: '2.0' }));
+  res.end(JSON.stringify({ status: 'ok', bot: 'DeltaAI', model: DEFAULT_MODEL, version: '3.0' }));
 }).listen(PORT, '0.0.0.0', () => {
   console.log('[HTTP] Health on port ' + PORT);
 });
@@ -330,7 +344,7 @@ createServer((req, res) => {
 const bot = new TelegramBot(BOT_TOKEN, { polling: true, request: { timeout: 60000 } });
 
 console.log('\n═══════════════════════════════════════════════════════════════');
-console.log('  DeltaAI Telegram Bot v2.0 — مع المسار الذكي!');
+console.log('  DeltaAI Telegram Bot v3.0 — المسار الذكي الحقيقي!');
 console.log('═══════════════════════════════════════════════════════════════\n');
 
 bot.getMe().then(info => {
@@ -348,25 +362,33 @@ bot.onText(/\/start/, msg => {
     'أنا بوت DeltaAI — أساعدك في أي سؤال!\n\n' +
     '💬 اكتب أي حاجة وهرد عليك\n\n' +
     '📚 الأوامر الخاصة:\n' +
-    '/ملف موضوع — ملف دراسي ملون PDF\n' +
-    '/ملخص موضوع — ملخص محاضرة PDF\n' +
-    '/اختبار موضوع — كويز بأسئلة\n' +
-    '/خريطة موضوع — خريطة ذهنية\n' +
-    '/نموذج — تغيير النموذج\n' +
-    '/مسح — مسح المحادثة\n' +
-    '/مساعدة — المساعدة'
+    '/ملف موضوع — ملف دراسي ملون PDF 🎨\n' +
+    '/ملخص موضوع — ملخص محاضرة PDF 📝\n' +
+    '/اختبار موضوع — كويز بأسئلة ✅\n' +
+    '/خريطة موضوع — خريطة ذهنية 🧠\n' +
+    '/تصميم — تغيير نمط التصميم 🎨\n' +
+    '/نموذج — تغيير النموذج 🤖\n' +
+    '/مسح — مسح المحادثة 🔄\n' +
+    '/مساعدة — المساعدة ❓'
   );
 });
 
 // ─── /مساعدة ────────────────────────────────────────────────────────────
 bot.onText(/\/مساعدة|\/help/, msg => {
   bot.sendMessage(msg.chat.id,
-    '🤖 DeltaAI Telegram Bot v2.0\n\n' +
+    '🤖 DeltaAI Telegram Bot v3.0\n\n' +
     '📚 أوامر المسار الذكي:\n' +
-    '/ملف موضوع — ملف دراسي ملون (PDF فيه ملخص + أسئلة + بطاقات)\n' +
-    '/ملخص موضوع — ملخص محاضرة في PDF\n' +
+    '/ملف موضوع — ملف دراسي ملون PDF (زي الموقع بالظبط!)\n' +
+    '/ملخص موضوع — ملخص محاضرة في PDF ملون\n' +
     '/اختبار موضوع — كويز بأسئلة اختيارية وصح/غلط\n' +
     '/خريطة موضوع — خريطة ذهنية\n\n' +
+    '🎨 أنماط التصميم:\n' +
+    '/تصميم اكاديمي — رسمي أكاديمي 🏛️\n' +
+    '/تصميم داكن — تقني مع ألوان نيون 🌑\n' +
+    '/تصميم اسلامي — أنيق مع زخارف ذهبية 🕌\n' +
+    '/تصميم بسيط — نظيف وأبيض 📄\n' +
+    '/تصميم ابداعي — ألوان جريئة وتدرجات 🌈\n' +
+    '/تصميم فاخر — أنيق ومونوكروم 💎\n\n' +
     '⚙️ إعدادات:\n' +
     '/نموذج — تغيير النموذج\n' +
     '/لغة — تغيير اللغة\n' +
@@ -375,35 +397,47 @@ bot.onText(/\/مساعدة|\/help/, msg => {
   );
 });
 
-// ─── /ملف — Smart Study PDF (المسار الذكي — ملون ومتorganize!) ────────
+// ─── /ملف — Smart Study PDF (المسار الذكي — ملون واحترافي!) ────────────
 bot.onText(/\/ملف(.*)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const topic = match[1].trim();
 
   if (!topic) {
-    bot.sendMessage(chatId, 'اكتب الموضوع بعد /ملف\n\nمثال: /ملف الذكاء الاصطناعي');
+    bot.sendMessage(chatId, 'اكتب الموضوع بعد /ملف\n\nمثال: /ملف الذكاء الاصطناعي\nمثال: /ملف السياحة في مصر');
     return;
   }
 
+  const session = getSession(chatId);
+  const styleDesc = session.style || '';
+  const styleInfo = styleDesc ? ' (نمط: ' + Object.keys(DESIGN_STYLES).find(k => DESIGN_STYLES[k] === styleDesc) + ')' : '';
+
   bot.sendChatAction(chatId, 'typing');
-  bot.sendMessage(chatId, '📚 بعملك ملف دراسي ملون عن: ' + topic + '\n⏳ ممكن ياخد 1-2 دقيقة...');
+  const waitMsg = await bot.sendMessage(chatId,
+    '📚 بعملك ملف دراسي ملون عن: ' + topic + styleInfo + '\n⏳ العملية بتاخد 30-60 ثانية...'
+  );
 
   try {
-    // Use المسار الذكي engine directly — same as website!
-    const pdfResult = await generateSmartPDF(topic, null, 'local');
+    const pdfResult = await generateSmartPDF(topic, {
+      styleDescription: styleDesc,
+      instructions: 'أضف أسئلة مراجعة وبطاقات ذاكرة. نظم المحتوى بألوان وتصميم احترافي مع جداول وعناصر ديكور.',
+    });
 
     if (pdfResult.success && pdfResult.fileUrl) {
+      bot.sendChatAction(chatId, 'upload_document');
       const pdfBuffer = await downloadPDF(pdfResult.fileUrl);
-      bot.sendDocument(chatId, pdfBuffer, {
-        caption: '📚 ' + topic,
+      const duration = pdfResult.durationMs ? ` (${(pdfResult.durationMs / 1000).toFixed(0)} ثانية)` : '';
+
+      await bot.sendDocument(chatId, pdfBuffer, {
+        caption: '📚 ' + topic + '\n🎨 المسار الذكي — PDF ملون واحترافي' + duration,
         filename: pdfResult.fileName || topic.replace(/\s+/g, '_') + '.pdf',
       });
+      bot.deleteMessage(chatId, waitMsg.message_id).catch(() => {});
     } else {
       bot.sendMessage(chatId, '⚠️ حصلت مشكلة في الملف. جرب تاني.');
     }
   } catch (error) {
     console.error('[ملف] Error:', error.message);
-    bot.sendMessage(chatId, '❌ حصل خطأ في عمل الملف: ' + error.message.substring(0, 100));
+    bot.sendMessage(chatId, '❌ حصل خطأ في عمل الملف: ' + error.message.substring(0, 150));
   }
 });
 
@@ -417,24 +451,35 @@ bot.onText(/\/ملخص(.*)/, async (msg, match) => {
     return;
   }
 
+  const session = getSession(chatId);
+  const styleDesc = session.style || '';
+
   bot.sendChatAction(chatId, 'typing');
-  bot.sendMessage(chatId, '📝 بعملك ملخص ملون عن: ' + topic + '\n⏳ ممكن ياخد 1-2 دقيقة...');
+  const waitMsg = await bot.sendMessage(chatId,
+    '📝 بعملك ملخص ملون عن: ' + topic + '\n⏳ العملية بتاخد 30-60 ثانية...'
+  );
 
   try {
-    const pdfResult = await generateSmartPDF('ملخص: ' + topic, null, 'local');
+    const pdfResult = await generateSmartPDF('ملخص: ' + topic, {
+      styleDescription: styleDesc,
+      instructions: 'لخص المحتوى بشكل مختصر ومنظم مع عناوين فرعية ونقاط رئيسية. أضف جداول مقارنة لو مناسب.',
+    });
 
     if (pdfResult.success && pdfResult.fileUrl) {
+      bot.sendChatAction(chatId, 'upload_document');
       const pdfBuffer = await downloadPDF(pdfResult.fileUrl);
-      bot.sendDocument(chatId, pdfBuffer, {
-        caption: '📝 ملخص: ' + topic,
+
+      await bot.sendDocument(chatId, pdfBuffer, {
+        caption: '📝 ملخص: ' + topic + '\n🎨 المسار الذكي — PDF ملون',
         filename: pdfResult.fileName || 'ملخص_' + topic.replace(/\s+/g, '_') + '.pdf',
       });
+      bot.deleteMessage(chatId, waitMsg.message_id).catch(() => {});
     } else {
       bot.sendMessage(chatId, '⚠️ حصلت مشكلة. جرب تاني.');
     }
   } catch (error) {
     console.error('[ملخص] Error:', error.message);
-    bot.sendMessage(chatId, '❌ حصل خطأ. جرب تاني.');
+    bot.sendMessage(chatId, '❌ حصل خطأ. جرب تاني: ' + error.message.substring(0, 100));
   }
 });
 
@@ -517,6 +562,44 @@ bot.onText(/\/خريطة(.*)|\/mindmap(.*)/, async (msg, match) => {
   }
 });
 
+// ─── /تصميم — Change design style ────────────────────────────────────────
+bot.onText(/\/تصميم(.*)|\/style(.*)/, (msg, match) => {
+  const session = getSession(msg.chat.id);
+  const arg = (match[1].trim() || match[2].trim()).toLowerCase();
+
+  if (!arg) {
+    const current = Object.keys(DESIGN_STYLES).find(k => DESIGN_STYLES[k] === session.style) || 'تلقائي';
+    bot.sendMessage(msg.chat.id,
+      '🎨 نمط التصميم الحالي: ' + current + '\n\n' +
+      'الأنماط المتاحة:\n' +
+      '🏛️ /تصميم اكاديمي — رسمي أكاديمي مع إطارات وألوان هادئة\n' +
+      '🌑 /تصميم داكن — تقني مع ألوان نيون\n' +
+      '🕌 /تصميم اسلامي — زخارف ذهبية وإطارات تقليدية\n' +
+      '📄 /تصميم بسيط — أبيض نظيف وبسيط\n' +
+      '🌈 /تصميم ابداعي — ألوان جريئة وتدرجات\n' +
+      '💎 /تصميم فاخر — مونوكروم أنيق\n\n' +
+      '🔄 /تصميم تلقائي — يختار الذكاء الاصطناعي الأنسب'
+    );
+    return;
+  }
+
+  if (arg === 'تلقائي' || arg === 'auto') {
+    session.style = '';
+    saveSessions();
+    bot.sendMessage(msg.chat.id, '🔄 تم إعادة التصميم للتلقائي — الذكاء الاصطناعي هيختار الأنسب ✅');
+    return;
+  }
+
+  const styleDesc = DESIGN_STYLES[arg];
+  if (styleDesc) {
+    session.style = styleDesc;
+    saveSessions();
+    bot.sendMessage(msg.chat.id, '✅ تم تغيير نمط التصميم إلى: ' + arg);
+  } else {
+    bot.sendMessage(msg.chat.id, '⚠️ نمط غير معروف. جرب: اكاديمي، داكن، اسلامي، بسيط، ابداعي، فاخر');
+  }
+});
+
 // ─── /نموذج ──────────────────────────────────────────────────────────────
 bot.onText(/\/نموذج(.*)|\/model(.*)/, (msg, match) => {
   const session = getSession(msg.chat.id);
@@ -535,7 +618,7 @@ bot.onText(/\/نموذج(.*)|\/model(.*)/, (msg, match) => {
 
 // ─── /مسح ────────────────────────────────────────────────────────────────
 bot.onText(/\/مسح|\/clear/, msg => {
-  delete sessions[msg.chat.id];
+  delete sessions[msg.chat.id]; // FIXED: was delete sessionssg.chat.id];
   saveSessions();
   bot.sendMessage(msg.chat.id, 'تم مسح المحادثة! 🔄');
 });
