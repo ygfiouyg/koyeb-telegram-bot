@@ -341,7 +341,7 @@ createServer((req, res) => {
 // Start Bot!
 // ═══════════════════════════════════════════════════════════════════════════
 
-const bot = new TelegramBot(BOT_TOKEN, { polling: true, request: { timeout: 60000 } });
+const bot = new TelegramBot(BOT_TOKEN, { polling: { interval: 3000, autoStart: true, params: { timeout: 60 } }, request: { timeout: 120000 } });
 
 console.log('\n═══════════════════════════════════════════════════════════════');
 console.log('  DeltaAI Telegram Bot v3.0 — المسار الذكي الحقيقي!');
@@ -700,7 +700,7 @@ bot.on('message', async msg => {
   }
 });
 
-bot.on('polling_error', err => console.error('[Polling]', err.message));
+bot.on("polling_error", err => { console.error("[Polling]", err.message); /* auto-retry */ });
 setInterval(saveSessions, 5 * 60_000);
 process.on('uncaughtException', e => console.error('[FATAL]', e.message));
 process.on('unhandledRejection', e => console.error('[WARN]', e));
