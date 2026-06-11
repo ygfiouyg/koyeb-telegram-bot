@@ -100,18 +100,99 @@ async function askDeltaAI(message, model, language) {
 }
 
 // ─── Smart PDF Generation (المسار الذكي) ────────────────────────────────
+// Uses /api/ai/hf/document — the SAME engine as المسار الذكي on the website!
+// This generates beautiful colored PDFs with quizzes, flashcards, etc.
 
-async function generateSmartPDF(title, content, docType, topicCategory) {
+async function generateSmartPDF(topic, content, mode) {
+  const url = DELTA_AI_URL + '/api/ai/hf/document';
+  console.log('[SmartPDF] Generating (المسار الذكي):', topic);
+
+  const body = {
+    mode: mode || 'local',         // 'local' = local PDF engine (fast + beautiful)
+    modelId: 'local-pdf',
+    topic: topic,
+    language: BOT_LANGUAGE,
+    instructions: 'أضف أسئلة مراجعة وبطاقات ذاكرة وخريطة ذهنية. نظم المحتوى بألوان وتصميم احترافي.',
+    includeAiImages: false,
+    channelName: 'DeltaAI Bot',
+  };
+
+  // If we have content, send it as a lecture
+  if (content) {
+    body.lectures = [{ title: topic, content: content }];
+    body.mode = 'batch';
+  }
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(180_000), // 3 min — PDF generation takes time
+  });
+
+  if (!response.ok) {
+    const err = await response.text().catch(() => '');
+    console.error('[SmartPDF] Error:', response.status, err);
+    throw new Error('SmartPDF error ' + response.status + ': ' + err.substring(0, 200));
+  }
+
+  // Check if response is SSE stream or JSON
+  const contentType = response.headers.get('content-type') || '';
+  
+  if (contentType.includes('text/event-stream')) {
+    // SSE response — parse stream for progress and result
+    let fileUrl = null;
+    let fileName = null;
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) {
+        const t = line.trim();
+        if (!t || !t.startsWith('data:')) continue;
+        const d = t.slice(5).trim();
+        if (d === '[DONE]') continue;
+        try {
+          const ev = JSON.parse(d);
+          if (ev.fileUrl) fileUrl = ev.fileUrl;
+          if (ev.fileName) fileName = ev.fileName;
+          if (ev.stage) console.log('[SmartPDF] Stage:', ev.stage, ev.progress ? ev.progress + '%' : '');
+        } catch {}
+      }
+    }
+    reader.releaseLock();
+
+    if (fileUrl) {
+      return { success: true, fileUrl, fileName: fileName || topic + '.pdf' };
+    }
+    throw new Error('SmartPDF: no fileUrl in SSE response');
+  }
+
+  // JSON response
+  const data = await response.json();
+  if (data.success || data.fileUrl) {
+    return { success: true, fileUrl: data.fileUrl, fileName: data.fileName || topic + '.pdf' };
+  }
+  throw new Error('SmartPDF failed: ' + (data.error || 'unknown'));
+}
+
+// ─── Simple PDF fallback (أبيض وأسود — للطوارئ فقط) ──────────────────────
+
+async function generateSimplePDF(title, content) {
   const url = DELTA_AI_URL + '/api/pdf/generate';
-  console.log('[SmartPDF] Generating:', title);
-
   const body = {
     title,
     content,
     modelId: DEFAULT_MODEL,
     language: BOT_LANGUAGE,
-    documentType: docType || 'lecture',
-    topicCategory: topicCategory || 'default',
+    documentType: 'lecture',
+    topicCategory: 'default',
     useDesignReasoning: true,
     includeImages: true,
   };
@@ -123,11 +204,7 @@ async function generateSmartPDF(title, content, docType, topicCategory) {
     signal: AbortSignal.timeout(120_000),
   });
 
-  if (!response.ok) {
-    const err = await response.text().catch(() => '');
-    throw new Error('PDF generate error ' + response.status + ': ' + err);
-  }
-
+  if (!response.ok) throw new Error('PDF error ' + response.status);
   return await response.json();
 }
 
@@ -298,7 +375,7 @@ bot.onText(/\/مساعدة|\/help/, msg => {
   );
 });
 
-// ─── /ملف — Smart Study PDF (المسار الذكي) ──────────────────────────────
+// ─── /ملف — Smart Study PDF (المسار الذكي — ملون ومتorganize!) ────────
 bot.onText(/\/ملف(.*)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const topic = match[1].trim();
@@ -309,54 +386,28 @@ bot.onText(/\/ملف(.*)/, async (msg, match) => {
   }
 
   bot.sendChatAction(chatId, 'typing');
-  bot.sendMessage(chatId, '📚 بعملك ملف دراسي ملون عن: ' + topic + '\n⏳ استنى شوية...');
+  bot.sendMessage(chatId, '📚 بعملك ملف دراسي ملون عن: ' + topic + '\n⏳ ممكن ياخد 1-2 دقيقة...');
 
   try {
-    // First get AI content about the topic
-    const aiResult = await askDeltaAI(
-      'اكتب محتوى دراسي شامل عن: ' + topic + '\nيشمل: تعريف، شرح مفصل، أمثلة، نقاط مهمة، أسئلة مراجعة',
-      'delta-pro',
-      BOT_LANGUAGE
-    );
+    // Use المسار الذكي engine directly — same as website!
+    const pdfResult = await generateSmartPDF(topic, null, 'local');
 
-    if (aiResult.content) {
-      // Now generate a rich PDF from the content
-      const pdfResult = await generateSmartPDF(
-        topic,
-        aiResult.content,
-        'lecture',
-        'default'
-      );
-
-      if (pdfResult.success && pdfResult.assetId) {
-        // Download and send the PDF
-        const pdfBuffer = await downloadPDF('/api/pdf/download/' + pdfResult.assetId);
-        bot.sendDocument(chatId, pdfBuffer, {
-          caption: '📚 ' + topic,
-          filename: topic.replace(/\s+/g, '_') + '.pdf',
-        });
-      } else if (pdfResult.success && pdfResult.fileUrl) {
-        const pdfBuffer = await downloadPDF(pdfResult.fileUrl);
-        bot.sendDocument(chatId, pdfBuffer, {
-          caption: '📚 ' + topic,
-          filename: topic.replace(/\s+/g, '_') + '.pdf',
-        });
-      } else {
-        // Fallback: send as text
-        const chunks = splitMsg('📚 ' + topic + '\n\n' + aiResult.content);
-        for (const chunk of chunks) {
-          await bot.sendMessage(chatId, chunk);
-        }
-        bot.sendMessage(chatId, '⚠️ الـ PDF حصل فيه مشكلة، بس المحتوى فوق!');
-      }
+    if (pdfResult.success && pdfResult.fileUrl) {
+      const pdfBuffer = await downloadPDF(pdfResult.fileUrl);
+      bot.sendDocument(chatId, pdfBuffer, {
+        caption: '📚 ' + topic,
+        filename: pdfResult.fileName || topic.replace(/\s+/g, '_') + '.pdf',
+      });
+    } else {
+      bot.sendMessage(chatId, '⚠️ حصلت مشكلة في الملف. جرب تاني.');
     }
   } catch (error) {
     console.error('[ملف] Error:', error.message);
-    bot.sendMessage(chatId, '❌ حصل خطأ في عمل الملف. جرب تاني.');
+    bot.sendMessage(chatId, '❌ حصل خطأ في عمل الملف: ' + error.message.substring(0, 100));
   }
 });
 
-// ─── /ملخص — Summary PDF ────────────────────────────────────────────────
+// ─── /ملخص — Summary PDF (مسار ذكي — ملون!) ─────────────────────────────
 bot.onText(/\/ملخص(.*)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const topic = match[1].trim();
@@ -367,36 +418,19 @@ bot.onText(/\/ملخص(.*)/, async (msg, match) => {
   }
 
   bot.sendChatAction(chatId, 'typing');
-  bot.sendMessage(chatId, '📝 بعملك ملخص عن: ' + topic + '\n⏳ استنى...');
+  bot.sendMessage(chatId, '📝 بعملك ملخص ملون عن: ' + topic + '\n⏳ ممكن ياخد 1-2 دقيقة...');
 
   try {
-    const aiResult = await askDeltaAI(
-      'لخص الموضوع ده بشكل منظم ومختصر مع النقاط المهمة: ' + topic,
-      'delta-pro',
-      BOT_LANGUAGE
-    );
+    const pdfResult = await generateSmartPDF('ملخص: ' + topic, null, 'local');
 
-    if (aiResult.content) {
-      const pdfResult = await generateSmartPDF(
-        'ملخص: ' + topic,
-        aiResult.content,
-        'summary',
-        'default'
-      );
-
-      if (pdfResult.success && (pdfResult.assetId || pdfResult.fileUrl)) {
-        const path = pdfResult.assetId ? '/api/pdf/download/' + pdfResult.assetId : pdfResult.fileUrl;
-        const pdfBuffer = await downloadPDF(path);
-        bot.sendDocument(chatId, pdfBuffer, {
-          caption: '📝 ملخص: ' + topic,
-          filename: 'ملخص_' + topic.replace(/\s+/g, '_') + '.pdf',
-        });
-      } else {
-        const chunks = splitMsg('📝 ملخص: ' + topic + '\n\n' + aiResult.content);
-        for (const chunk of chunks) {
-          await bot.sendMessage(chatId, chunk);
-        }
-      }
+    if (pdfResult.success && pdfResult.fileUrl) {
+      const pdfBuffer = await downloadPDF(pdfResult.fileUrl);
+      bot.sendDocument(chatId, pdfBuffer, {
+        caption: '📝 ملخص: ' + topic,
+        filename: pdfResult.fileName || 'ملخص_' + topic.replace(/\s+/g, '_') + '.pdf',
+      });
+    } else {
+      bot.sendMessage(chatId, '⚠️ حصلت مشكلة. جرب تاني.');
     }
   } catch (error) {
     console.error('[ملخص] Error:', error.message);
