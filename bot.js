@@ -1,8 +1,11 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// DeltaAI Telegram Bot — Runs on Koyeb (FREE, no credit card, 24/7)
+// DeltaAI Telegram Bot v2.0 — مع المسار الذكي!
 // ═══════════════════════════════════════════════════════════════════════════
-// Uses long polling (works on Koyeb unlike HF Spaces)
-// Calls DeltaAI directly — simple, no relay needed
+// الأوامر الجديدة:
+// /ملف — ملف دراسي ملون (زي المسار الذكي)
+// /ملخص — ملخص محاضرة في PDF
+// /اختبار — كويز بأسئلة اختيارية
+// /خريطة — خريطة ذهنية
 // ═══════════════════════════════════════════════════════════════════════════
 
 import TelegramBot from 'node-telegram-bot-api';
@@ -40,7 +43,7 @@ function saveSessions() {
   try { writeFileSync(join(DATA_DIR, 'sessions.json'), JSON.stringify(sessions, null, 2)); } catch {}
 }
 
-// ─── DeltaAI ─────────────────────────────────────────────────────────────
+// ─── DeltaAI Chat ────────────────────────────────────────────────────────
 
 async function askDeltaAI(message, model, language) {
   const url = DELTA_AI_URL + '/api/chat/stream';
@@ -62,6 +65,11 @@ async function askDeltaAI(message, model, language) {
   }
 
   let content = '';
+  let pdfUrl = null;
+  let smartDocResult = null;
+  let quizData = null;
+  let imageDataUrl = null;
+
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
@@ -77,12 +85,115 @@ async function askDeltaAI(message, model, language) {
       if (!t || !t.startsWith('data:')) continue;
       const d = t.slice(5).trim();
       if (d === '[DONE]') continue;
-      try { const ev = JSON.parse(d); if (ev.content) content += ev.content; } catch {}
+      try {
+        const ev = JSON.parse(d);
+        if (ev.content) content += ev.content;
+        if (ev.fileGenResult?.fileUrl) pdfUrl = ev.fileGenResult.fileUrl;
+        if (ev.smartDocResult) smartDocResult = ev.smartDocResult;
+        if (ev.quizData) quizData = ev.quizData;
+        if (ev.imageDataUrl) imageDataUrl = ev.imageDataUrl;
+      } catch {}
     }
   }
   reader.releaseLock();
-  return content.trim();
+  return { content: content.trim(), pdfUrl, smartDocResult, quizData, imageDataUrl };
 }
+
+// ─── Smart PDF Generation (المسار الذكي) ────────────────────────────────
+
+async function generateSmartPDF(title, content, docType, topicCategory) {
+  const url = DELTA_AI_URL + '/api/pdf/generate';
+  console.log('[SmartPDF] Generating:', title);
+
+  const body = {
+    title,
+    content,
+    modelId: DEFAULT_MODEL,
+    language: BOT_LANGUAGE,
+    documentType: docType || 'lecture',
+    topicCategory: topicCategory || 'default',
+    useDesignReasoning: true,
+    includeImages: true,
+  };
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(120_000),
+  });
+
+  if (!response.ok) {
+    const err = await response.text().catch(() => '');
+    throw new Error('PDF generate error ' + response.status + ': ' + err);
+  }
+
+  return await response.json();
+}
+
+// ─── Quiz Generation ─────────────────────────────────────────────────────
+
+async function generateQuiz(topic, content, questionCount, difficulty) {
+  const url = DELTA_AI_URL + '/api/ai/quiz';
+  console.log('[Quiz] Generating for:', topic);
+
+  const body = {
+    topic,
+    questionCount: questionCount || 10,
+    difficulty: difficulty || 'medium',
+    types: ['mcq', 'true-false'],
+  };
+  if (content) body.content = content;
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(60_000),
+  });
+
+  if (!response.ok) {
+    const err = await response.text().catch(() => '');
+    throw new Error('Quiz error ' + response.status + ': ' + err);
+  }
+
+  return await response.json();
+}
+
+// ─── Mind Map Generation ─────────────────────────────────────────────────
+
+async function generateMindMap(topic, content) {
+  const url = DELTA_AI_URL + '/api/ai/mindmap';
+  console.log('[MindMap] Generating for:', topic);
+
+  const body = { topic, language: BOT_LANGUAGE };
+  if (content) body.content = content;
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(60_000),
+  });
+
+  if (!response.ok) {
+    const err = await response.text().catch(() => '');
+    throw new Error('MindMap error ' + response.status + ': ' + err);
+  }
+
+  return await response.json();
+}
+
+// ─── Download PDF from DeltaAI ───────────────────────────────────────────
+
+async function downloadPDF(path) {
+  const fullUrl = path.startsWith('http') ? path : DELTA_AI_URL + path;
+  const response = await fetch(fullUrl, { signal: AbortSignal.timeout(30_000) });
+  if (!response.ok) throw new Error('Download failed: ' + response.status);
+  return Buffer.from(await response.arrayBuffer());
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────
 
 function splitMsg(text, max = 4096) {
   if (text.length <= max) return [text];
@@ -97,12 +208,40 @@ function splitMsg(text, max = 4096) {
   return chunks;
 }
 
-// ─── HTTP server (Koyeb needs a port open) ──────────────────────────────
+function formatQuiz(quizData) {
+  if (!quizData || !quizData.questions) return 'مفيش أسئلة';
+  let text = '📝 ' + (quizData.title || 'كويز') + '\n\n';
+  quizData.questions.forEach((q, i) => {
+    text += (i + 1) + '. ' + q.question + '\n';
+    if (q.options) {
+      q.options.forEach((opt, j) => {
+        text += '   ' + String.fromCharCode(65 + j) + ') ' + opt + '\n';
+      });
+    }
+    text += '   ✅ ' + q.correctAnswer + '\n';
+    if (q.explanation) text += '   💡 ' + q.explanation + '\n';
+    text += '\n';
+  });
+  return text;
+}
+
+function formatMindMap(data, indent = 0) {
+  if (!data) return '';
+  let text = '  '.repeat(indent) + (indent === 0 ? '🧠 ' : '• ') + data.text + '\n';
+  if (data.children) {
+    for (const child of data.children) {
+      text += formatMindMap(child, indent + 1);
+    }
+  }
+  return text;
+}
+
+// ─── HTTP health server ──────────────────────────────────────────────────
 
 import { createServer } from 'http';
 createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ status: 'ok', bot: 'DeltaAI', model: DEFAULT_MODEL }));
+  res.end(JSON.stringify({ status: 'ok', bot: 'DeltaAI', model: DEFAULT_MODEL, version: '2.0' }));
 }).listen(PORT, '0.0.0.0', () => {
   console.log('[HTTP] Health on port ' + PORT);
 });
@@ -114,7 +253,7 @@ createServer((req, res) => {
 const bot = new TelegramBot(BOT_TOKEN, { polling: true, request: { timeout: 60000 } });
 
 console.log('\n═══════════════════════════════════════════════════════════════');
-console.log('  DeltaAI Telegram Bot — شغال 24/7 على Koyeb!');
+console.log('  DeltaAI Telegram Bot v2.0 — مع المسار الذكي!');
 console.log('═══════════════════════════════════════════════════════════════\n');
 
 bot.getMe().then(info => {
@@ -130,7 +269,12 @@ bot.onText(/\/start/, msg => {
   bot.sendMessage(msg.chat.id,
     'أهلاً ' + name + '! 👋\n\n' +
     'أنا بوت DeltaAI — أساعدك في أي سؤال!\n\n' +
-    'اكتب أي حاجة وهرد عليك 💡\n\n' +
+    '💬 اكتب أي حاجة وهرد عليك\n\n' +
+    '📚 الأوامر الخاصة:\n' +
+    '/ملف موضوع — ملف دراسي ملون PDF\n' +
+    '/ملخص موضوع — ملخص محاضرة PDF\n' +
+    '/اختبار موضوع — كويز بأسئلة\n' +
+    '/خريطة موضوع — خريطة ذهنية\n' +
     '/نموذج — تغيير النموذج\n' +
     '/مسح — مسح المحادثة\n' +
     '/مساعدة — المساعدة'
@@ -140,13 +284,203 @@ bot.onText(/\/start/, msg => {
 // ─── /مساعدة ────────────────────────────────────────────────────────────
 bot.onText(/\/مساعدة|\/help/, msg => {
   bot.sendMessage(msg.chat.id,
-    'DeltaAI Telegram Bot\n\n' +
+    '🤖 DeltaAI Telegram Bot v2.0\n\n' +
+    '📚 أوامر المسار الذكي:\n' +
+    '/ملف موضوع — ملف دراسي ملون (PDF فيه ملخص + أسئلة + بطاقات)\n' +
+    '/ملخص موضوع — ملخص محاضرة في PDF\n' +
+    '/اختبار موضوع — كويز بأسئلة اختيارية وصح/غلط\n' +
+    '/خريطة موضوع — خريطة ذهنية\n\n' +
+    '⚙️ إعدادات:\n' +
     '/نموذج — تغيير النموذج\n' +
-    '/مسح — مسح المحادثة\n' +
     '/لغة — تغيير اللغة\n' +
-    '/مساعدة — المساعدة\n\n' +
-    'اكتب أي سؤال وهرد عليك!'
+    '/مسح — مسح المحادثة\n\n' +
+    '💡 أو اكتب عادي وهرد عليك!'
   );
+});
+
+// ─── /ملف — Smart Study PDF (المسار الذكي) ──────────────────────────────
+bot.onText(/\/ملف(.*)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const topic = match[1].trim();
+
+  if (!topic) {
+    bot.sendMessage(chatId, 'اكتب الموضوع بعد /ملف\n\nمثال: /ملف الذكاء الاصطناعي');
+    return;
+  }
+
+  bot.sendChatAction(chatId, 'typing');
+  bot.sendMessage(chatId, '📚 بعملك ملف دراسي ملون عن: ' + topic + '\n⏳ استنى شوية...');
+
+  try {
+    // First get AI content about the topic
+    const aiResult = await askDeltaAI(
+      'اكتب محتوى دراسي شامل عن: ' + topic + '\nيشمل: تعريف، شرح مفصل، أمثلة، نقاط مهمة، أسئلة مراجعة',
+      'delta-pro',
+      BOT_LANGUAGE
+    );
+
+    if (aiResult.content) {
+      // Now generate a rich PDF from the content
+      const pdfResult = await generateSmartPDF(
+        topic,
+        aiResult.content,
+        'lecture',
+        'default'
+      );
+
+      if (pdfResult.success && pdfResult.assetId) {
+        // Download and send the PDF
+        const pdfBuffer = await downloadPDF('/api/pdf/download/' + pdfResult.assetId);
+        bot.sendDocument(chatId, pdfBuffer, {
+          caption: '📚 ' + topic,
+          filename: topic.replace(/\s+/g, '_') + '.pdf',
+        });
+      } else if (pdfResult.success && pdfResult.fileUrl) {
+        const pdfBuffer = await downloadPDF(pdfResult.fileUrl);
+        bot.sendDocument(chatId, pdfBuffer, {
+          caption: '📚 ' + topic,
+          filename: topic.replace(/\s+/g, '_') + '.pdf',
+        });
+      } else {
+        // Fallback: send as text
+        const chunks = splitMsg('📚 ' + topic + '\n\n' + aiResult.content);
+        for (const chunk of chunks) {
+          await bot.sendMessage(chatId, chunk);
+        }
+        bot.sendMessage(chatId, '⚠️ الـ PDF حصل فيه مشكلة، بس المحتوى فوق!');
+      }
+    }
+  } catch (error) {
+    console.error('[ملف] Error:', error.message);
+    bot.sendMessage(chatId, '❌ حصل خطأ في عمل الملف. جرب تاني.');
+  }
+});
+
+// ─── /ملخص — Summary PDF ────────────────────────────────────────────────
+bot.onText(/\/ملخص(.*)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const topic = match[1].trim();
+
+  if (!topic) {
+    bot.sendMessage(chatId, 'اكتب الموضوع بعد /ملخص\n\nمثال: /ملخص محاضرة الأحياء');
+    return;
+  }
+
+  bot.sendChatAction(chatId, 'typing');
+  bot.sendMessage(chatId, '📝 بعملك ملخص عن: ' + topic + '\n⏳ استنى...');
+
+  try {
+    const aiResult = await askDeltaAI(
+      'لخص الموضوع ده بشكل منظم ومختصر مع النقاط المهمة: ' + topic,
+      'delta-pro',
+      BOT_LANGUAGE
+    );
+
+    if (aiResult.content) {
+      const pdfResult = await generateSmartPDF(
+        'ملخص: ' + topic,
+        aiResult.content,
+        'summary',
+        'default'
+      );
+
+      if (pdfResult.success && (pdfResult.assetId || pdfResult.fileUrl)) {
+        const path = pdfResult.assetId ? '/api/pdf/download/' + pdfResult.assetId : pdfResult.fileUrl;
+        const pdfBuffer = await downloadPDF(path);
+        bot.sendDocument(chatId, pdfBuffer, {
+          caption: '📝 ملخص: ' + topic,
+          filename: 'ملخص_' + topic.replace(/\s+/g, '_') + '.pdf',
+        });
+      } else {
+        const chunks = splitMsg('📝 ملخص: ' + topic + '\n\n' + aiResult.content);
+        for (const chunk of chunks) {
+          await bot.sendMessage(chatId, chunk);
+        }
+      }
+    }
+  } catch (error) {
+    console.error('[ملخص] Error:', error.message);
+    bot.sendMessage(chatId, '❌ حصل خطأ. جرب تاني.');
+  }
+});
+
+// ─── /اختبار — Quiz ─────────────────────────────────────────────────────
+bot.onText(/\/اختبار(.*)|\/quiz(.*)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const topic = (match[1].trim() || match[2].trim());
+
+  if (!topic) {
+    bot.sendMessage(chatId, 'اكتب الموضوع بعد /اختبار\n\nمثال: /اختبار الفيزياء');
+    return;
+  }
+
+  bot.sendChatAction(chatId, 'typing');
+  bot.sendMessage(chatId, '📝 بعملك كويز عن: ' + topic + '\n⏳ استنى...');
+
+  try {
+    const quizData = await generateQuiz(topic, null, 10, 'medium');
+    const text = formatQuiz(quizData);
+
+    const chunks = splitMsg(text);
+    for (const chunk of chunks) {
+      await bot.sendMessage(chatId, chunk);
+    }
+  } catch (error) {
+    console.error('[اختبار] Error:', error.message);
+    // Fallback: ask AI to generate quiz
+    try {
+      const aiResult = await askDeltaAI(
+        'اعمل كويز 10 أسئلة اختيارية عن: ' + topic + '\nمع الإجابات الصحيحة والشرح',
+        DEFAULT_MODEL,
+        BOT_LANGUAGE
+      );
+      const chunks = splitMsg(aiResult.content);
+      for (const chunk of chunks) {
+        await bot.sendMessage(chatId, chunk);
+      }
+    } catch {
+      bot.sendMessage(chatId, '❌ حصل خطأ. جرب تاني.');
+    }
+  }
+});
+
+// ─── /خريطة — Mind Map ──────────────────────────────────────────────────
+bot.onText(/\/خريطة(.*)|\/mindmap(.*)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const topic = (match[1].trim() || match[2].trim());
+
+  if (!topic) {
+    bot.sendMessage(chatId, 'اكتب الموضوع بعد /خريطة\n\nمثال: /خريطة البرمجة');
+    return;
+  }
+
+  bot.sendChatAction(chatId, 'typing');
+  bot.sendMessage(chatId, '🧠 بعملك خريطة ذهنية عن: ' + topic + '\n⏳ استنى...');
+
+  try {
+    const mindmapData = await generateMindMap(topic);
+    const text = '🧠 خريطة ذهنية: ' + topic + '\n\n' + formatMindMap(mindmapData.mindmap);
+    const chunks = splitMsg(text);
+    for (const chunk of chunks) {
+      await bot.sendMessage(chatId, chunk);
+    }
+  } catch (error) {
+    console.error('[خريطة] Error:', error.message);
+    // Fallback: ask AI to generate mind map text
+    try {
+      const aiResult = await askDeltaAI(
+        'اعمل خريطة ذهنية نصية عن: ' + topic + '\nبشكل شجري منظم',
+        DEFAULT_MODEL,
+        BOT_LANGUAGE
+      );
+      const chunks = splitMsg(aiResult.content);
+      for (const chunk of chunks) {
+        await bot.sendMessage(chatId, chunk);
+      }
+    } catch {
+      bot.sendMessage(chatId, '❌ حصل خطأ. جرب تاني.');
+    }
+  }
 });
 
 // ─── /نموذج ──────────────────────────────────────────────────────────────
@@ -156,7 +490,7 @@ bot.onText(/\/نموذج(.*)|\/model(.*)/, (msg, match) => {
   if (!arg) {
     bot.sendMessage(msg.chat.id,
       'النموذج: ' + (session.model || DEFAULT_MODEL) + '\n\n' +
-      'النماذج:\n• deepseek-v3 (سريع)\n• qwen-2-5 (سريع)\n• delta-pro (خبير)\n• delta-ultra (الأقوى)\n\n/نموذج deepseek-v3'
+      'النماذج:\n• deepseek-v3 (سريع)\n• qwen-2-5 (سريع)\n• delta-pro (خبير — الأحسن للملفات)\n• delta-ultra (الأقوى)\n\n/نموذج delta-pro'
     );
   } else {
     session.model = arg;
@@ -196,16 +530,53 @@ bot.on('message', async msg => {
   bot.sendChatAction(chatId, 'typing');
 
   try {
-    const content = await askDeltaAI(text, session.model || DEFAULT_MODEL, session.language);
+    const result = await askDeltaAI(text, session.model || DEFAULT_MODEL, session.language);
     session.msgCount++;
     saveSessions();
 
-    if (content) {
-      const chunks = splitMsg(content);
+    // Send text
+    if (result.content) {
+      const chunks = splitMsg(result.content);
       for (const chunk of chunks) {
         await bot.sendMessage(chatId, chunk);
       }
     }
+
+    // Send Smart Doc PDF if generated
+    if (result.smartDocResult?.success && result.smartDocResult.fileUrl) {
+      try {
+        const pdfBuffer = await downloadPDF(result.smartDocResult.fileUrl);
+        bot.sendDocument(chatId, pdfBuffer, {
+          caption: '📄 ' + (result.smartDocResult.fileName || 'مستند'),
+          filename: result.smartDocResult.fileName || 'document.pdf',
+        });
+      } catch {
+        bot.sendMessage(chatId, '📄 المستند: ' + DELTA_AI_URL + result.smartDocResult.fileUrl);
+      }
+    }
+
+    // Send PDF if generated
+    if (result.pdfUrl) {
+      try {
+        const pdfBuffer = await downloadPDF(result.pdfUrl);
+        bot.sendDocument(chatId, pdfBuffer, {
+          caption: '📄 مستند مولّد',
+          filename: 'document.pdf',
+        });
+      } catch {
+        bot.sendMessage(chatId, '📄 المستند: ' + DELTA_AI_URL + result.pdfUrl);
+      }
+    }
+
+    // Send image if generated
+    if (result.imageDataUrl) {
+      try {
+        const base64 = result.imageDataUrl.replace(/^data:image\/\w+;base64,/, '');
+        const buffer = Buffer.from(base64, 'base64');
+        bot.sendPhoto(chatId, buffer);
+      } catch {}
+    }
+
   } catch (error) {
     console.error('[Bot] Error:', error.message);
     bot.sendMessage(chatId, '❌ حصل خطأ. جرب تاني.');
